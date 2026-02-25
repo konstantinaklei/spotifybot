@@ -2,8 +2,11 @@
 import os
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-from flask import Flask, redirect, render_template, request
-from dotenv import load_dotenv # <--- Πρόσθεσε αυτό
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from dotenv import load_dotenv  # <--- Πρόσθεσε αυτό
 
 load_dotenv()
 
@@ -14,7 +17,10 @@ client_secret = os.getenv('SPOTIPY_CLIENT_SECRET')
 redirect_uri = os.getenv('SPOTIPY_REDIRECT_URI')
 scope = "user-top-read user-read-private user-read-email"
 
-app = Flask(__name__)
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
 # Πριν το sp_oauth, αν υπάρχει παλιά cache, σβήσε την
 if os.path.exists(".cache_temp"):
     os.remove(".cache_temp")
@@ -28,38 +34,61 @@ sp_oauth = SpotifyOAuth(
     cache_path=".cache_temp" # Δίνουμε ένα όνομα αρχείου
 )
 
-@app.route('/')
-def index():
+@app.get('/', response_class=HTMLResponse)
+async def index():
     return '<h1>Spotify Bot</h1><a href="/login">Connect to Spotify</a>'
 
-@app.route('/login')
-def login():
+@app.get('/login')
+async def login():
     # Παίρνουμε το URL για το authentication από το Spotify
     auth_url = sp_oauth.get_authorize_url()
-    return redirect(auth_url)
+    return RedirectResponse(url=auth_url)
 
-@app.route('/callback')
-def callback():
+@app.get('/callback', response_class=HTMLResponse)
+async def callback(request: Request):
     try:
-        code = request.args.get('code')
+        code = request.query_params.get('code')
+        print(f"=== CALLBACK DEBUG ===")
+        print(f"Code received: {code[:20]}..." if code else "No code received!")
+        
         token_info = sp_oauth.get_access_token(code)
+        print(f"Token received successfully!")
+        print(f"Token scopes: {token_info.get('scope', 'N/A')}")
+        
         sp = spotipy.Spotify(auth=token_info['access_token'])
         
         # Προσπάθησε να πάρεις τα στοιχεία
+        print("Calling sp.current_user()...")
         user_info = sp.current_user()
         user_name = user_info['display_name']
+        print(f"User: {user_name}")
         
+        print("Calling sp.current_user_top_tracks()...")
         results = sp.current_user_top_tracks(limit=10, time_range='short_term')
         tracks = results['items']
+        print(f"Got {len(tracks)} tracks")
         
+    except spotipy.exceptions.SpotifyException as e:
+        print(f"=== SPOTIFY API ERROR ===")
+        print(f"HTTP Status: {e.http_status}")
+        print(f"Code: {e.code}")
+        print(f"Message: {e.msg}")
+        print(f"Reason: {e.reason}")
+        print(f"Headers: {e.headers}")
+        user_name = "Χρήστης (Login Error)"
+        tracks = []
     except Exception as e:
-        # Αν υπάρξει σφάλμα (π.χ. 403), δώσε προκαθορισμένες τιμές
-        print(f"Σφάλμα Spotify: {e}")
+        print(f"=== GENERAL ERROR ===")
+        print(f"Type: {type(e).__name__}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         user_name = "Χρήστης (Login Error)"
         tracks = [] 
 
-    return render_template('index.html', user_name=user_name, tracks=tracks)
+    return templates.TemplateResponse("index.html", {"request": request, "user_name": user_name, "tracks": tracks})
    
 if __name__ == '__main__':
+    import uvicorn
     # Τρέχουμε τον server στη θύρα 5000
-    app.run(port=5000, debug=True)
+    uvicorn.run(app, host="127.0.0.1", port=5000)
